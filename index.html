@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Grid Man — сетка и человечек</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: light; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #e9e6d3; }
   body { touch-action: none; }
   #stage { display: block; width: 100vw; height: 100vh; }
 
@@ -15,35 +15,34 @@
     position: fixed;
     left: 14px; bottom: 12px;
     font: 12px/1.5 -apple-system, Segoe UI, Roboto, sans-serif;
-    color: #888;
+    color: #6b6959;
     pointer-events: none;
     user-select: none;
     max-width: 340px;
-    text-shadow: 0 1px 2px #000;
   }
-  .hint b { color: #e5231a; font-weight: 600; }
+  .hint b { color: #16150f; font-weight: 600; }
 
   #reset {
     position: fixed;
     right: 14px; top: 12px;
     font: 12px -apple-system, Segoe UI, Roboto, sans-serif;
-    color: #bbb;
-    background: rgba(255,255,255,.06);
-    border: 1px solid rgba(255,255,255,.18);
+    color: #45433a;
+    background: rgba(0,0,0,.04);
+    border: 1px solid rgba(0,0,0,.18);
     border-radius: 6px;
     padding: 6px 12px;
     cursor: pointer;
   }
-  #reset:hover { color: #fff; border-color: rgba(255,255,255,.4); }
+  #reset:hover { color: #000; border-color: rgba(0,0,0,.45); }
 </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
   <button id="reset">Сброс</button>
   <div class="hint">
-    Перетаскивай <b>линии сетки</b>. Тяни <b>ладони и ступни</b> (полукруги) —
-    они прилипают к 4 линиям ячейки человечка и перекидываются на соседнюю линию,
-    если она ближе. <b>Голова</b> двигается свободно. Скелет подстраивается сам.
+    Перетаскивай <b>линии сетки</b>. Тяни <b>ладони и ступни</b> — они прилипают
+    к 4 линиям ячейки человечка и перекидываются на соседнюю линию, если она ближе.
+    <b>Голова</b> двигается внутри ячейки. Локти и колени сгибаются сами.
   </div>
 
 <script>
@@ -66,7 +65,7 @@
   const CELL = { ci: 2, rj: 2 };
 
   // ---- Limbs: each is magnetised to one of the cell's 4 lines (side) at
-  //      parameter t (0..1) along it. Drawn as a semicircle gripping the line.
+  //      parameter t (0..1) along it. Drawn as a rounded hand/foot end.
   const DEFAULT_LIMBS = () => [
     { kind: "hand", side: "left",   t: 0.42 },  // left hand
     { kind: "hand", side: "top",    t: 0.86 },  // right hand
@@ -77,13 +76,14 @@
 
   // ---- Head: a free circle (NOT clinging to the lines), but always kept INSIDE
   //      the figure's cell. Stored as (u,v) in [0..1] relative to that cell.
-  const DEFAULT_HEAD = () => ({ u: 0.5, v: 0.28 });
+  const DEFAULT_HEAD = () => ({ u: 0.5, v: 0.22 });
   let head = DEFAULT_HEAD();
 
-  const HEAD_R = 26;
-  const LIMB_R = 21;
-  const JOINT_R = 5;     // elbow / knee marker
-  const LINE_W = 3.2;
+  // Pictogram look: sizes are fractions of the base cell so they scale.
+  const HEAD_FRAC = 0.13;   // head radius
+  const THICK_FRAC = 0.15;  // limb thickness
+  const FIG = "#16150f";    // figure colour
+  const GRID = "rgba(20,18,10,0.16)";
   // Bone lengths are CONSTANT (a fraction of the base cell = 0.25 of the smaller
   // viewport side), not tied to the current cell. So a limb's real length never
   // changes when you drag the grid — it only *looks* longer as it straightens
@@ -91,16 +91,19 @@
   const REF_CELL_FRAC = 0.25; // base (equal) cell size as a fraction of viewport
   const ARM_BONE = 0.28;      // upper arm == forearm, fraction of the base cell
   const LEG_BONE = 0.24;      // thigh == shin
-  const RED = "#e5231a";
-  const GRID = "rgba(255,255,255,0.85)";
   const HIT_LINE = 12;   // px tolerance for grabbing a grid line
-  const HIT_PAD = 14;    // extra px around a point for grabbing it
+  const HIT_PAD = 18;    // extra px around a point for grabbing it
 
   // ---------- geometry helpers ----------
   const vx = i => vfrac[i] * W;
   const hy = j => hfrac[j] * H;
   const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
   const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+
+  // Scale reference: the constant base cell size (0.25 of the smaller viewport side).
+  const refCell = () => REF_CELL_FRAC * Math.min(W, H);
+  const headR = () => HEAD_FRAC * refCell();
+  const thick = () => THICK_FRAC * refCell();
 
   function cellBounds() {
     return { x0: vx(CELL.ci), x1: vx(CELL.ci + 1), y0: hy(CELL.rj), y1: hy(CELL.rj + 1) };
@@ -112,8 +115,9 @@
     const b = cellBounds();
     const x = b.x0 + head.u * (b.x1 - b.x0);
     const y = b.y0 + head.v * (b.y1 - b.y0);
-    const minX = b.x0 + HEAD_R, maxX = b.x1 - HEAD_R;
-    const minY = b.y0 + HEAD_R, maxY = b.y1 - HEAD_R;
+    const r = headR();
+    const minX = b.x0 + r, maxX = b.x1 - r;
+    const minY = b.y0 + r, maxY = b.y1 - r;
     return {
       x: minX <= maxX ? clamp(x, minX, maxX) : (b.x0 + b.x1) / 2,
       y: minY <= maxY ? clamp(y, minY, maxY) : (b.y0 + b.y1) / 2,
@@ -128,14 +132,6 @@
       case "top":    return { x: b.x0 + l.t * (b.x1 - b.x0), y: b.y0 };
       case "bottom": return { x: b.x0 + l.t * (b.x1 - b.x0), y: b.y1 };
     }
-  }
-
-  // Inward direction (into the cell) the semicircle's dome should face.
-  function inward(side) {
-    return side === "left"  ? { x: 1, y: 0 }
-         : side === "right" ? { x: -1, y: 0 }
-         : side === "top"   ? { x: 0, y: 1 }
-         :                    { x: 0, y: -1 };
   }
 
   // Re-snap a limb to the nearest boundary line of the cell, clamped inside it.
@@ -204,13 +200,13 @@
     const lf = limbPos(limbs[2]);
     const rf = limbPos(limbs[3]);
     const feetC = { x: (lf.x + rf.x) / 2, y: (lf.y + rf.y) / 2 };
-    const shoulder = lerp(hd, feetC, 0.30);
-    const pelvis = lerp(hd, feetC, 0.62);
+    const shoulder = lerp(hd, feetC, 0.34);
+    const pelvis = lerp(hd, feetC, 0.64);
     const axisX = lerp(shoulder, pelvis, 0.5).x; // body's vertical axis
     const b = cellBounds();
-    const refCell = REF_CELL_FRAC * Math.min(W, H); // constant base cell size
-    const arm = ARM_BONE * refCell;
-    const leg = LEG_BONE * refCell;
+    const rc = refCell(); // constant base cell size
+    const arm = ARM_BONE * rc;
+    const leg = LEG_BONE * rc;
     const elbowL = ik2(shoulder, lh, arm, arm, b, axisX);
     const elbowR = ik2(shoulder, rh, arm, arm, b, axisX);
     const kneeL = ik2(pelvis, lf, leg, leg, b, axisX);
@@ -222,7 +218,7 @@
   function draw() {
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#000";
+    ctx.fillStyle = "#e9e6d3";
     ctx.fillRect(0, 0, W, H);
 
     // grid
@@ -239,21 +235,21 @@
     }
     ctx.stroke();
 
-    // faint highlight of the figure's cell (the 4 lines its limbs cling to)
+    // faint highlight of the figure's cell
     const b = cellBounds();
-    ctx.fillStyle = "rgba(229,35,26,0.05)";
+    ctx.fillStyle = "rgba(20,18,10,0.04)";
     ctx.fillRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
 
-    // skeleton bones
+    // figure: one thick, round-capped stroke = chunky pictogram limbs
     const s = skeleton();
-    ctx.strokeStyle = RED;
-    ctx.lineWidth = LINE_W;
+    ctx.strokeStyle = FIG;
+    ctx.fillStyle = FIG;
+    ctx.lineWidth = thick();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.beginPath();
-    // spine
-    ctx.moveTo(s.head.x, s.head.y); ctx.lineTo(s.shoulder.x, s.shoulder.y);
-    ctx.lineTo(s.pelvis.x, s.pelvis.y);
+    // torso (starts at the shoulders; head floats above with a gap)
+    ctx.moveTo(s.shoulder.x, s.shoulder.y); ctx.lineTo(s.pelvis.x, s.pelvis.y);
     // arms: shoulder -> elbow -> hand
     ctx.moveTo(s.shoulder.x, s.shoulder.y); ctx.lineTo(s.elbowL.x, s.elbowL.y); ctx.lineTo(s.lh.x, s.lh.y);
     ctx.moveTo(s.shoulder.x, s.shoulder.y); ctx.lineTo(s.elbowR.x, s.elbowR.y); ctx.lineTo(s.rh.x, s.rh.y);
@@ -262,44 +258,24 @@
     ctx.moveTo(s.pelvis.x, s.pelvis.y); ctx.lineTo(s.kneeR.x, s.kneeR.y); ctx.lineTo(s.rf.x, s.rf.y);
     ctx.stroke();
 
-    // elbow / knee joints
-    ctx.fillStyle = RED;
-    for (const j of [s.elbowL, s.elbowR, s.kneeL, s.kneeR]) {
-      ctx.beginPath(); ctx.arc(j.x, j.y, JOINT_R, 0, Math.PI * 2); ctx.fill();
-    }
-
-    // hands & feet as semicircles gripping their line
-    ctx.fillStyle = RED;
-    for (let i = 0; i < limbs.length; i++) semicircle(limbs[i]);
-
-    // head as a full circle (free)
+    // head: detached filled circle
     ctx.beginPath();
-    ctx.arc(s.head.x, s.head.y, HEAD_R, 0, Math.PI * 2);
+    ctx.arc(s.head.x, s.head.y, headR(), 0, Math.PI * 2);
     ctx.fill();
 
     if (hover) drawHover(hover);
   }
 
-  function semicircle(l) {
-    const p = limbPos(l);
-    const d = inward(l.side);
-    const phi = Math.atan2(d.y, d.x);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, LIMB_R, phi - Math.PI / 2, phi + Math.PI / 2);
-    ctx.closePath();
-    ctx.fill();
-  }
-
   function drawHover(hv) {
     ctx.save();
-    ctx.strokeStyle = "rgba(255,255,255,0.7)";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(20,18,10,0.4)";
+    ctx.lineWidth = 2;
     if (hv.type === "head") {
       const p = headPos();
-      ctx.beginPath(); ctx.arc(p.x, p.y, HEAD_R + 6, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x, p.y, headR() + 6, 0, Math.PI * 2); ctx.stroke();
     } else if (hv.type === "limb") {
       const p = limbPos(limbs[hv.index]);
-      ctx.beginPath(); ctx.arc(p.x, p.y, LIMB_R + 6, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x, p.y, thick() * 0.6 + 6, 0, Math.PI * 2); ctx.stroke();
     } else if (hv.type === "vline") {
       const x = vx(hv.index);
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
@@ -314,13 +290,14 @@
   function pick(mx, my) {
     // head first
     const hp = headPos();
-    if ((mx - hp.x) ** 2 + (my - hp.y) ** 2 <= (HEAD_R + HIT_PAD) ** 2) {
+    if ((mx - hp.x) ** 2 + (my - hp.y) ** 2 <= (headR() + HIT_PAD) ** 2) {
       return { type: "head" };
     }
-    // limbs
+    // limbs (grab near the rounded hand/foot end)
+    const grab = thick() * 0.6 + HIT_PAD;
     for (let i = 0; i < limbs.length; i++) {
       const p = limbPos(limbs[i]);
-      if ((mx - p.x) ** 2 + (my - p.y) ** 2 <= (LIMB_R + HIT_PAD) ** 2) {
+      if ((mx - p.x) ** 2 + (my - p.y) ** 2 <= grab * grab) {
         return { type: "limb", index: i };
       }
     }
