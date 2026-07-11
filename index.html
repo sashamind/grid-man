@@ -56,8 +56,8 @@
 
   // ---- Grid: line positions as fractions [0..1] so it stays responsive.
   //      First/last are the outer border (fixed); interior lines are draggable.
-  const DEFAULT_V = [0.0, 0.28, 0.39, 0.82, 1.0];
-  const DEFAULT_H = [0.0, 0.26, 0.43, 0.81, 1.0];
+  const DEFAULT_V = [0.0, 0.25, 0.5, 0.75, 1.0];
+  const DEFAULT_H = [0.0, 0.25, 0.5, 0.75, 1.0];
   let vfrac = DEFAULT_V.slice();
   let hfrac = DEFAULT_H.slice();
 
@@ -84,10 +84,10 @@
   const LIMB_R = 21;
   const JOINT_R = 5;     // elbow / knee marker
   const LINE_W = 3.2;
-  // Bone lengths as a fraction of the viewport's smaller side, so limbs bend at
-  // rest and straighten as the points are pulled apart.
-  const ARM_BONE = 0.15; // upper arm == forearm
-  const LEG_BONE = 0.16; // thigh == shin
+  // Bone lengths as a fraction of the cell's smaller side. Kept short so limbs
+  // are (near) fully straight at rest and only bend when the points come close.
+  const ARM_BONE = 0.28; // upper arm == forearm
+  const LEG_BONE = 0.24; // thigh == shin
   const RED = "#e5231a";
   const GRID = "rgba(255,255,255,0.85)";
   const HIT_LINE = 12;   // px tolerance for grabbing a grid line
@@ -167,8 +167,9 @@
     if (d < 1e-6) {
       joint = { x: R.x, y: R.y };
     } else if (d >= l1 + l2) {
-      const bx = dx / d, by = dy / d;
-      joint = { x: R.x + bx * l1, y: R.y + by * l1 };
+      // out of reach: straight limb, joint at its proportional spot on the line
+      const f = l1 / (l1 + l2);
+      joint = { x: R.x + dx * f, y: R.y + dy * f };
     } else {
       const bx = dx / d, by = dy / d;
       const a = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
@@ -205,10 +206,10 @@
     const shoulder = lerp(hd, feetC, 0.30);
     const pelvis = lerp(hd, feetC, 0.62);
     const core = lerp(shoulder, pelvis, 0.5);
-    const minDim = Math.min(W, H);
-    const arm = ARM_BONE * minDim;
-    const leg = LEG_BONE * minDim;
     const b = cellBounds();
+    const cellMin = Math.min(b.x1 - b.x0, b.y1 - b.y0);
+    const arm = ARM_BONE * cellMin;
+    const leg = LEG_BONE * cellMin;
     const elbowL = ik2(shoulder, lh, arm, arm, core, b);
     const elbowR = ik2(shoulder, rh, arm, arm, core, b);
     const kneeL = ik2(pelvis, lf, leg, leg, core, b);
