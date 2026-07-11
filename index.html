@@ -41,8 +41,8 @@
   <button id="reset">Сброс</button>
   <div class="hint">
     Перетаскивай <b>линии сетки</b>. Тяни <b>ладони и ступни</b> — они прилипают
-    к 4 линиям ячейки человечка и перекидываются на соседнюю линию, если она ближе.
-    <b>Голова</b> двигается внутри ячейки. Локти и колени сгибаются сами.
+    к 4 линиям ячейки. Двигай <b>голову</b> и <b>низ тела</b> (невидимая ручка —
+    тяни за живот). Локти и колени сгибаются сами.
   </div>
 
 <script>
@@ -74,10 +74,13 @@
   ];
   let limbs = DEFAULT_LIMBS();
 
-  // ---- Head: a free circle (NOT clinging to the lines), but always kept INSIDE
-  //      the figure's cell. Stored as (u,v) in [0..1] relative to that cell.
-  const DEFAULT_HEAD = () => ({ u: 0.5, v: 0.22 });
+  // ---- Two free manipulators kept INSIDE the cell, stored as (u,v) in [0..1]:
+  //      head  — the visible circle up top;
+  //      pelvis — an INVISIBLE handle that moves the lower body (grab the belly).
+  const DEFAULT_HEAD = () => ({ u: 0.5, v: 0.20 });
+  const DEFAULT_PELVIS = () => ({ u: 0.5, v: 0.66 });
   let head = DEFAULT_HEAD();
+  let pelvis = DEFAULT_PELVIS();
 
   // Pictogram look: sizes are fractions of the base cell so they scale.
   const HEAD_FRAC = 0.065;  // head radius
@@ -111,13 +114,12 @@
     return { x0: vx(CELL.ci), x1: vx(CELL.ci + 1), y0: hy(CELL.rj), y1: hy(CELL.rj + 1) };
   }
 
-  // Keep the head circle fully inside the cell (fall back to centre if the cell
-  // is smaller than the head).
-  function headPos() {
+  // A manipulator's pixel position, kept fully inside the cell by margin r
+  // (falls back to centre if the cell is smaller than 2r).
+  function cellPoint(uv, r) {
     const b = cellBounds();
-    const x = b.x0 + head.u * (b.x1 - b.x0);
-    const y = b.y0 + head.v * (b.y1 - b.y0);
-    const r = headR();
+    const x = b.x0 + uv.u * (b.x1 - b.x0);
+    const y = b.y0 + uv.v * (b.y1 - b.y0);
     const minX = b.x0 + r, maxX = b.x1 - r;
     const minY = b.y0 + r, maxY = b.y1 - r;
     return {
@@ -125,6 +127,8 @@
       y: minY <= maxY ? clamp(y, minY, maxY) : (b.y0 + b.y1) / 2,
     };
   }
+  const headPos = () => cellPoint(head, headR());
+  const pelvisPos = () => cellPoint(pelvis, thick()); // margin = torso bottom radius
 
   function limbPos(l) {
     const b = cellBounds();
@@ -134,25 +138,6 @@
       case "top":    return { x: b.x0 + l.t * (b.x1 - b.x0), y: b.y0 };
       case "bottom": return { x: b.x0 + l.t * (b.x1 - b.x0), y: b.y1 };
     }
-  }
-
-  // Direction pointing into the cell from a limb's boundary line.
-  function inward(side) {
-    return side === "left"  ? { x: 1, y: 0 }
-         : side === "right" ? { x: -1, y: 0 }
-         : side === "top"   ? { x: 0, y: 1 }
-         :                    { x: 0, y: -1 };
-  }
-
-  // The drawn hand/foot centre: pushed inward by its radius r and clamped so the
-  // rounded end stays fully inside the cell.
-  function limbEnd(l, r) {
-    const b = cellBounds();
-    const p = limbPos(l), d = inward(l.side);
-    return {
-      x: clamp(p.x + d.x * r, b.x0 + r, b.x1 - r),
-      y: clamp(p.y + d.y * r, b.y0 + r, b.y1 - r),
-    };
   }
 
   // Re-snap a limb to the nearest boundary line of the cell, clamped inside it.
@@ -216,25 +201,23 @@
   // ---------- skeleton ----------
   function skeleton() {
     const hd = headPos();
-    const endR = 0.5 * THICK_FRAC * refCell() * END_MUL; // hand/foot half-width
-    // hands/feet are inset so their rounded caps stay inside the cell
-    const lh = limbEnd(limbs[0], endR);
-    const rh = limbEnd(limbs[1], endR);
-    const lf = limbEnd(limbs[2], endR);
-    const rf = limbEnd(limbs[3], endR);
-    const feetC = { x: (lf.x + rf.x) / 2, y: (lf.y + rf.y) / 2 };
-    const shoulder = lerp(hd, feetC, 0.34);
-    const pelvis = lerp(hd, feetC, 0.64);
-    const axisX = lerp(shoulder, pelvis, 0.5).x; // body's vertical axis
+    const pv = pelvisPos();
+    // hands/feet sit right on their grid lines; the cell-clip cuts them flat
+    const lh = limbPos(limbs[0]);
+    const rh = limbPos(limbs[1]);
+    const lf = limbPos(limbs[2]);
+    const rf = limbPos(limbs[3]);
+    const shoulder = lerp(hd, pv, 0.30); // between head and pelvis
+    const axisX = lerp(shoulder, pv, 0.5).x; // body's vertical axis
     const b = cellBounds();
     const rc = refCell(); // constant base cell size
     const arm = ARM_BONE * rc;
     const leg = LEG_BONE * rc;
     const elbowL = ik2(shoulder, lh, arm, arm, b, axisX);
     const elbowR = ik2(shoulder, rh, arm, arm, b, axisX);
-    const kneeL = ik2(pelvis, lf, leg, leg, b, axisX);
-    const kneeR = ik2(pelvis, rf, leg, leg, b, axisX);
-    return { head: hd, lh, rh, lf, rf, shoulder, pelvis, elbowL, elbowR, kneeL, kneeR };
+    const kneeL = ik2(pv, lf, leg, leg, b, axisX);
+    const kneeR = ik2(pv, rf, leg, leg, b, axisX);
+    return { head: hd, lh, rh, lf, rf, shoulder, pelvis: pv, elbowL, elbowR, kneeL, kneeR };
   }
 
   // ---------- rendering ----------
@@ -254,15 +237,21 @@
   }
 
   // A two-bone limb root R -> joint J -> end E, half-width lerping rootR..endR,
-  // with rounded joint and end. Overlapping fills merge into one smooth shape.
+  // rounded at root and joint but with a FLAT end (the cell-clip trims it to the
+  // grid line). Overlapping fills merge into one smooth shape.
   function taperedLimb(R, J, E, rootR, endR) {
     const l1 = Math.hypot(J.x - R.x, J.y - R.y);
     const l2 = Math.hypot(E.x - J.x, E.y - J.y);
     const total = l1 + l2 || 1;
     const jointR = rootR + (endR - rootR) * (l1 / total);
+    // overshoot the end past the grid line so the cell-clip leaves a clean flat edge
+    let Eext = E;
+    if (l2 > 1e-6) {
+      Eext = { x: E.x + (E.x - J.x) / l2 * endR, y: E.y + (E.y - J.y) / l2 * endR };
+    }
     taperSegment(R, J, rootR, jointR);
-    taperSegment(J, E, jointR, endR);
-    disc(R, rootR); disc(J, jointR); disc(E, endR);
+    taperSegment(J, Eext, jointR, endR);
+    disc(R, rootR); disc(J, jointR);
   }
 
   function disc(p, r) {
@@ -299,7 +288,15 @@
     const t = thick();
     const rootR = 0.5 * t;             // limb half-width at the root
     const endR = rootR * END_MUL;      // ...widening toward the hand/foot
+    const bodyBot = 0.5 * t * BODY_MUL; // torso half-width at the pelvis
+    const bodyTop = bodyBot * 0.5;      // ...half as thick at the shoulders
     ctx.fillStyle = FIG;
+
+    // body + limbs clipped to the cell → hands/feet end flat on the grid lines
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    ctx.clip();
 
     // arms & legs: tapered, thickening toward the ends
     taperedLimb(s.shoulder, s.elbowL, s.lh, rootR, endR);
@@ -307,16 +304,12 @@
     taperedLimb(s.pelvis, s.kneeL, s.lf, rootR, endR);
     taperedLimb(s.pelvis, s.kneeR, s.rf, rootR, endR);
 
-    // torso: thicker round-capped bar
-    ctx.strokeStyle = FIG;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = t * BODY_MUL;
-    ctx.beginPath();
-    ctx.moveTo(s.shoulder.x, s.shoulder.y); ctx.lineTo(s.pelvis.x, s.pelvis.y);
-    ctx.stroke();
+    // torso: tapered — thin at the shoulders, full thickness at the pelvis
+    taperSegment(s.shoulder, s.pelvis, bodyTop, bodyBot);
+    disc(s.shoulder, bodyTop); disc(s.pelvis, bodyBot);
+    ctx.restore();
 
-    // head: detached filled circle
+    // head: detached filled circle (drawn unclipped, always a full circle)
     ctx.beginPath();
     ctx.arc(s.head.x, s.head.y, headR(), 0, Math.PI * 2);
     ctx.fill();
@@ -333,7 +326,10 @@
       ctx.beginPath(); ctx.arc(p.x, p.y, headR() + 6, 0, Math.PI * 2); ctx.stroke();
     } else if (hv.type === "limb") {
       const p = limbPos(limbs[hv.index]);
-      ctx.beginPath(); ctx.arc(p.x, p.y, thick() * 0.6 + 6, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x, p.y, thick() * 0.7 + 6, 0, Math.PI * 2); ctx.stroke();
+    } else if (hv.type === "pelvis") {
+      const p = pelvisPos();
+      ctx.beginPath(); ctx.arc(p.x, p.y, thick() * 1.1, 0, Math.PI * 2); ctx.stroke();
     } else if (hv.type === "vline") {
       const x = vx(hv.index);
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
@@ -351,13 +347,19 @@
     if ((mx - hp.x) ** 2 + (my - hp.y) ** 2 <= (headR() + HIT_PAD) ** 2) {
       return { type: "head" };
     }
-    // limbs (grab near the rounded hand/foot end)
-    const grab = thick() * 0.6 + HIT_PAD;
+    // limbs (grab near the hand/foot end)
+    const grab = thick() * 0.7 + HIT_PAD;
     for (let i = 0; i < limbs.length; i++) {
       const p = limbPos(limbs[i]);
       if ((mx - p.x) ** 2 + (my - p.y) ** 2 <= grab * grab) {
         return { type: "limb", index: i };
       }
+    }
+    // pelvis handle (invisible — grab the lower body)
+    const pp = pelvisPos();
+    const grabP = thick() * 1.2;
+    if ((mx - pp.x) ** 2 + (my - pp.y) ** 2 <= grabP * grabP) {
+      return { type: "pelvis" };
     }
     // interior grid lines
     let best = null, bestD = HIT_LINE;
@@ -382,10 +384,11 @@
   }
 
   function applyDrag(x, y) {
-    if (drag.type === "head") {
+    if (drag.type === "head" || drag.type === "pelvis") {
       const b = cellBounds();
-      head.u = clamp((x - b.x0) / ((b.x1 - b.x0) || 1), 0, 1);
-      head.v = clamp((y - b.y0) / ((b.y1 - b.y0) || 1), 0, 1);
+      const m = drag.type === "head" ? head : pelvis;
+      m.u = clamp((x - b.x0) / ((b.x1 - b.x0) || 1), 0, 1);
+      m.v = clamp((y - b.y0) / ((b.y1 - b.y0) || 1), 0, 1);
     } else if (drag.type === "limb") {
       snapLimb(limbs[drag.index], x, y);
     } else if (drag.type === "vline") {
@@ -427,7 +430,7 @@
 
   function updateCursor() {
     canvas.style.cursor = !hover ? "default"
-      : (hover.type === "head" || hover.type === "limb") ? "grab"
+      : (hover.type === "head" || hover.type === "limb" || hover.type === "pelvis") ? "grab"
       : hover.type === "vline" ? "ew-resize" : "ns-resize";
   }
 
@@ -442,6 +445,7 @@
     hfrac = DEFAULT_H.slice();
     limbs = DEFAULT_LIMBS();
     head = DEFAULT_HEAD();
+    pelvis = DEFAULT_PELVIS();
     draw();
   });
 
