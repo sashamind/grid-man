@@ -75,8 +75,9 @@
   ];
   let limbs = DEFAULT_LIMBS();
 
-  // ---- Head: a free circle, NOT attached to the grid. Stored as fractions.
-  const DEFAULT_HEAD = () => ({ fx: 0.55, fy: 0.33 });
+  // ---- Head: a free circle (NOT clinging to the lines), but always kept INSIDE
+  //      the figure's cell. Stored as (u,v) in [0..1] relative to that cell.
+  const DEFAULT_HEAD = () => ({ u: 0.5, v: 0.28 });
   let head = DEFAULT_HEAD();
 
   const HEAD_R = 26;
@@ -97,7 +98,19 @@
     return { x0: vx(CELL.ci), x1: vx(CELL.ci + 1), y0: hy(CELL.rj), y1: hy(CELL.rj + 1) };
   }
 
-  function headPos() { return { x: head.fx * W, y: head.fy * H }; }
+  // Keep the head circle fully inside the cell (fall back to centre if the cell
+  // is smaller than the head).
+  function headPos() {
+    const b = cellBounds();
+    const x = b.x0 + head.u * (b.x1 - b.x0);
+    const y = b.y0 + head.v * (b.y1 - b.y0);
+    const minX = b.x0 + HEAD_R, maxX = b.x1 - HEAD_R;
+    const minY = b.y0 + HEAD_R, maxY = b.y1 - HEAD_R;
+    return {
+      x: minX <= maxX ? clamp(x, minX, maxX) : (b.x0 + b.x1) / 2,
+      y: minY <= maxY ? clamp(y, minY, maxY) : (b.y0 + b.y1) / 2,
+    };
+  }
 
   function limbPos(l) {
     const b = cellBounds();
@@ -266,8 +279,9 @@
 
   function applyDrag(x, y) {
     if (drag.type === "head") {
-      head.fx = clamp(x / W, 0.02, 0.98);
-      head.fy = clamp(y / H, 0.02, 0.98);
+      const b = cellBounds();
+      head.u = clamp((x - b.x0) / ((b.x1 - b.x0) || 1), 0, 1);
+      head.v = clamp((y - b.y0) / ((b.y1 - b.y0) || 1), 0, 1);
     } else if (drag.type === "limb") {
       snapLimb(limbs[drag.index], x, y);
     } else if (drag.type === "vline") {
