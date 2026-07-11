@@ -18,10 +18,10 @@
     color: #888;
     pointer-events: none;
     user-select: none;
-    max-width: 320px;
+    max-width: 340px;
     text-shadow: 0 1px 2px #000;
   }
-  .hint b { color: #e02318; font-weight: 600; }
+  .hint b { color: #e5231a; font-weight: 600; }
 
   #reset {
     position: fixed;
@@ -41,10 +41,9 @@
   <canvas id="stage"></canvas>
   <button id="reset">Сброс</button>
   <div class="hint">
-    Перетаскивай <b>линии сетки</b> — они гнут пространство.<br>
-    Тяни <b>точки</b> (ладони и ступни) — они скользят вдоль ближайшей
-    линии внутри своей ячейки и перекидываются на перпендикулярную.
-    Скелет человечка подстраивается сам.
+    Перетаскивай <b>линии сетки</b>. Тяни <b>ладони и ступни</b> (полукруги) —
+    они прилипают к 4 линиям ячейки человечка и перекидываются на соседнюю линию,
+    если она ближе. <b>Голова</b> двигается свободно. Скелет подстраивается сам.
   </div>
 
 <script>
@@ -55,36 +54,38 @@
   const ctx = canvas.getContext("2d");
   let W = 0, H = 0, DPR = 1;
 
-  // ---- Grid: line positions stored as fractions [0..1] so it stays responsive.
+  // ---- Grid: line positions as fractions [0..1] so it stays responsive.
   //      First/last are the outer border (fixed); interior lines are draggable.
   const DEFAULT_V = [0.0, 0.28, 0.39, 0.82, 1.0];
   const DEFAULT_H = [0.0, 0.26, 0.43, 0.81, 1.0];
   let vfrac = DEFAULT_V.slice();
   let hfrac = DEFAULT_H.slice();
 
-  // ---- Anchors: the 5 red points (head, two hands, two feet).
-  //      Each lives in ONE cell (ci = column, rj = row) and is magnetised to one
-  //      of the cell's 4 boundary lines (side), at parameter t (0..1) along it.
-  //      It never leaves its cell.
-  function makeAnchor(kind, ci, rj, side, t) {
-    return { kind, ci, rj, side, t };
-  }
-  const DEFAULT_ANCHORS = () => [
-    makeAnchor("head",  2, 2, "top",    0.55),
-    makeAnchor("hand",  1, 2, "right",  0.35),  // left hand
-    makeAnchor("hand",  3, 1, "left",   0.85),  // right hand
-    makeAnchor("foot",  1, 3, "top",    0.55),  // left foot
-    makeAnchor("foot",  3, 3, "top",    0.30),  // right foot
+  // ---- The figure lives inside ONE cell. All 4 limbs (hands + feet) may only
+  //      cling to the 4 boundary lines of THAT cell. (column ci, row rj)
+  const CELL = { ci: 2, rj: 2 };
+
+  // ---- Limbs: each is magnetised to one of the cell's 4 lines (side) at
+  //      parameter t (0..1) along it. Drawn as a semicircle gripping the line.
+  const DEFAULT_LIMBS = () => [
+    { kind: "hand", side: "left",   t: 0.42 },  // left hand
+    { kind: "hand", side: "top",    t: 0.86 },  // right hand
+    { kind: "foot", side: "bottom", t: 0.28 },  // left foot
+    { kind: "foot", side: "bottom", t: 0.74 },  // right foot
   ];
-  let anchors = DEFAULT_ANCHORS();
+  let limbs = DEFAULT_LIMBS();
+
+  // ---- Head: a free circle, NOT attached to the grid. Stored as fractions.
+  const DEFAULT_HEAD = () => ({ fx: 0.55, fy: 0.33 });
+  let head = DEFAULT_HEAD();
 
   const HEAD_R = 26;
-  const LIMB_R = 17;
+  const LIMB_R = 21;
   const LINE_W = 3.2;
   const RED = "#e5231a";
   const GRID = "rgba(255,255,255,0.85)";
   const HIT_LINE = 12;   // px tolerance for grabbing a grid line
-  const HIT_PT = 30;     // px tolerance for grabbing an anchor
+  const HIT_PAD = 14;    // extra px around a point for grabbing it
 
   // ---------- geometry helpers ----------
   const vx = i => vfrac[i] * W;
@@ -92,46 +93,56 @@
   const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
   const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 
-  function cellBounds(ci, rj) {
-    return { x0: vx(ci), x1: vx(ci + 1), y0: hy(rj), y1: hy(rj + 1) };
+  function cellBounds() {
+    return { x0: vx(CELL.ci), x1: vx(CELL.ci + 1), y0: hy(CELL.rj), y1: hy(CELL.rj + 1) };
   }
 
-  function anchorPos(a) {
-    const b = cellBounds(a.ci, a.rj);
-    switch (a.side) {
-      case "left":   return { x: b.x0, y: b.y0 + a.t * (b.y1 - b.y0) };
-      case "right":  return { x: b.x1, y: b.y0 + a.t * (b.y1 - b.y0) };
-      case "top":    return { x: b.x0 + a.t * (b.x1 - b.x0), y: b.y0 };
-      case "bottom": return { x: b.x0 + a.t * (b.x1 - b.x0), y: b.y1 };
+  function headPos() { return { x: head.fx * W, y: head.fy * H }; }
+
+  function limbPos(l) {
+    const b = cellBounds();
+    switch (l.side) {
+      case "left":   return { x: b.x0, y: b.y0 + l.t * (b.y1 - b.y0) };
+      case "right":  return { x: b.x1, y: b.y0 + l.t * (b.y1 - b.y0) };
+      case "top":    return { x: b.x0 + l.t * (b.x1 - b.x0), y: b.y0 };
+      case "bottom": return { x: b.x0 + l.t * (b.x1 - b.x0), y: b.y1 };
     }
   }
 
-  // Re-snap an anchor to the nearest boundary line of its cell, clamped inside it.
-  function snapAnchor(a, mx, my) {
-    const b = cellBounds(a.ci, a.rj);
+  // Inward direction (into the cell) the semicircle's dome should face.
+  function inward(side) {
+    return side === "left"  ? { x: 1, y: 0 }
+         : side === "right" ? { x: -1, y: 0 }
+         : side === "top"   ? { x: 0, y: 1 }
+         :                    { x: 0, y: -1 };
+  }
+
+  // Re-snap a limb to the nearest boundary line of the cell, clamped inside it.
+  function snapLimb(l, mx, my) {
+    const b = cellBounds();
     const px = clamp(mx, b.x0, b.x1);
     const py = clamp(my, b.y0, b.y1);
     const dLeft = px - b.x0, dRight = b.x1 - px;
     const dTop = py - b.y0, dBottom = b.y1 - py;
     const m = Math.min(dLeft, dRight, dTop, dBottom);
-    const w = b.x1 - b.x0 || 1, h = b.y1 - b.y0 || 1;
-    if (m === dLeft)        { a.side = "left";   a.t = clamp((py - b.y0) / h, 0, 1); }
-    else if (m === dRight)  { a.side = "right";  a.t = clamp((py - b.y0) / h, 0, 1); }
-    else if (m === dTop)    { a.side = "top";    a.t = clamp((px - b.x0) / w, 0, 1); }
-    else                    { a.side = "bottom"; a.t = clamp((px - b.x0) / w, 0, 1); }
+    const w = (b.x1 - b.x0) || 1, h = (b.y1 - b.y0) || 1;
+    if (m === dLeft)       { l.side = "left";   l.t = clamp((py - b.y0) / h, 0, 1); }
+    else if (m === dRight) { l.side = "right";  l.t = clamp((py - b.y0) / h, 0, 1); }
+    else if (m === dTop)   { l.side = "top";    l.t = clamp((px - b.x0) / w, 0, 1); }
+    else                   { l.side = "bottom"; l.t = clamp((px - b.x0) / w, 0, 1); }
   }
 
   // ---------- skeleton ----------
   function skeleton() {
-    const head = anchorPos(anchors[0]);
-    const lh = anchorPos(anchors[1]);
-    const rh = anchorPos(anchors[2]);
-    const lf = anchorPos(anchors[3]);
-    const rf = anchorPos(anchors[4]);
+    const hd = headPos();
+    const lh = limbPos(limbs[0]);
+    const rh = limbPos(limbs[1]);
+    const lf = limbPos(limbs[2]);
+    const rf = limbPos(limbs[3]);
     const feetC = { x: (lf.x + rf.x) / 2, y: (lf.y + rf.y) / 2 };
-    const shoulder = lerp(head, feetC, 0.30);
-    const pelvis = lerp(head, feetC, 0.62);
-    return { head, lh, rh, lf, rf, shoulder, pelvis };
+    const shoulder = lerp(hd, feetC, 0.30);
+    const pelvis = lerp(hd, feetC, 0.62);
+    return { head: hd, lh, rh, lf, rf, shoulder, pelvis };
   }
 
   // ---------- rendering ----------
@@ -155,6 +166,11 @@
     }
     ctx.stroke();
 
+    // faint highlight of the figure's cell (the 4 lines its limbs cling to)
+    const b = cellBounds();
+    ctx.fillStyle = "rgba(229,35,26,0.05)";
+    ctx.fillRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+
     // skeleton bones
     const s = skeleton();
     ctx.strokeStyle = RED;
@@ -162,30 +178,33 @@
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.beginPath();
-    // spine
     ctx.moveTo(s.head.x, s.head.y); ctx.lineTo(s.shoulder.x, s.shoulder.y);
     ctx.lineTo(s.pelvis.x, s.pelvis.y);
-    // arms
     ctx.moveTo(s.shoulder.x, s.shoulder.y); ctx.lineTo(s.lh.x, s.lh.y);
     ctx.moveTo(s.shoulder.x, s.shoulder.y); ctx.lineTo(s.rh.x, s.rh.y);
-    // legs
     ctx.moveTo(s.pelvis.x, s.pelvis.y); ctx.lineTo(s.lf.x, s.lf.y);
     ctx.moveTo(s.pelvis.x, s.pelvis.y); ctx.lineTo(s.rf.x, s.rf.y);
     ctx.stroke();
 
-    // joints (semicircle-ish dots)
+    // hands & feet as semicircles gripping their line
     ctx.fillStyle = RED;
-    dot(s.head, HEAD_R);
-    dot(s.lh, LIMB_R); dot(s.rh, LIMB_R);
-    dot(s.lf, LIMB_R); dot(s.rf, LIMB_R);
+    for (let i = 0; i < limbs.length; i++) semicircle(limbs[i]);
 
-    // highlight whatever the pointer is hovering / dragging
+    // head as a full circle (free)
+    ctx.beginPath();
+    ctx.arc(s.head.x, s.head.y, HEAD_R, 0, Math.PI * 2);
+    ctx.fill();
+
     if (hover) drawHover(hover);
   }
 
-  function dot(p, r) {
+  function semicircle(l) {
+    const p = limbPos(l);
+    const d = inward(l.side);
+    const phi = Math.atan2(d.y, d.x);
     ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, LIMB_R, phi - Math.PI / 2, phi + Math.PI / 2);
+    ctx.closePath();
     ctx.fill();
   }
 
@@ -193,11 +212,12 @@
     ctx.save();
     ctx.strokeStyle = "rgba(255,255,255,0.7)";
     ctx.lineWidth = 1.5;
-    if (hv.type === "anchor") {
-      const p = anchorPos(anchors[hv.index]);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, (hv.index === 0 ? HEAD_R : LIMB_R) + 6, 0, Math.PI * 2);
-      ctx.stroke();
+    if (hv.type === "head") {
+      const p = headPos();
+      ctx.beginPath(); ctx.arc(p.x, p.y, HEAD_R + 6, 0, Math.PI * 2); ctx.stroke();
+    } else if (hv.type === "limb") {
+      const p = limbPos(limbs[hv.index]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, LIMB_R + 6, 0, Math.PI * 2); ctx.stroke();
     } else if (hv.type === "vline") {
       const x = vx(hv.index);
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
@@ -210,12 +230,16 @@
 
   // ---------- hit testing ----------
   function pick(mx, my) {
-    // anchors first (top priority)
-    for (let i = 0; i < anchors.length; i++) {
-      const p = anchorPos(anchors[i]);
-      const r = (i === 0 ? HEAD_R : LIMB_R) + HIT_PT * 0.5;
-      if ((mx - p.x) ** 2 + (my - p.y) ** 2 <= r * r) {
-        return { type: "anchor", index: i };
+    // head first
+    const hp = headPos();
+    if ((mx - hp.x) ** 2 + (my - hp.y) ** 2 <= (HEAD_R + HIT_PAD) ** 2) {
+      return { type: "head" };
+    }
+    // limbs
+    for (let i = 0; i < limbs.length; i++) {
+      const p = limbPos(limbs[i]);
+      if ((mx - p.x) ** 2 + (my - p.y) ** 2 <= (LIMB_R + HIT_PAD) ** 2) {
+        return { type: "limb", index: i };
       }
     }
     // interior grid lines
@@ -232,12 +256,27 @@
   }
 
   // ---------- interaction ----------
-  let drag = null;   // active drag descriptor
-  let hover = null;  // hovered element (for highlight)
+  let drag = null;
+  let hover = null;
 
   function pointerXY(e) {
     const r = canvas.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  function applyDrag(x, y) {
+    if (drag.type === "head") {
+      head.fx = clamp(x / W, 0.02, 0.98);
+      head.fy = clamp(y / H, 0.02, 0.98);
+    } else if (drag.type === "limb") {
+      snapLimb(limbs[drag.index], x, y);
+    } else if (drag.type === "vline") {
+      const i = drag.index;
+      vfrac[i] = clamp(x / W, vfrac[i - 1] + 0.03, vfrac[i + 1] - 0.03);
+    } else if (drag.type === "hline") {
+      const j = drag.index;
+      hfrac[j] = clamp(y / H, hfrac[j - 1] + 0.03, hfrac[j + 1] - 0.03);
+    }
   }
 
   function onDown(e) {
@@ -245,28 +284,16 @@
     const hit = pick(x, y);
     if (!hit) return;
     drag = hit;
-    if (hit.type === "anchor") snapAnchor(anchors[hit.index], x, y);
+    applyDrag(x, y);
     canvas.setPointerCapture(e.pointerId);
+    hover = drag;
     draw();
   }
 
   function onMove(e) {
     const { x, y } = pointerXY(e);
-    if (!drag) { hover = pick(x, y); draw(); return; }
-
-    if (drag.type === "anchor") {
-      snapAnchor(anchors[drag.index], x, y);
-    } else if (drag.type === "vline") {
-      const i = drag.index;
-      const min = vfrac[i - 1] + 0.03;
-      const max = vfrac[i + 1] - 0.03;
-      vfrac[i] = clamp(x / W, min, max);
-    } else if (drag.type === "hline") {
-      const j = drag.index;
-      const min = hfrac[j - 1] + 0.03;
-      const max = hfrac[j + 1] - 0.03;
-      hfrac[j] = clamp(y / H, min, max);
-    }
+    if (!drag) { hover = pick(x, y); updateCursor(); draw(); return; }
+    applyDrag(x, y);
     hover = drag;
     draw();
   }
@@ -281,14 +308,13 @@
   }
 
   function updateCursor() {
-    canvas.style.cursor = hover
-      ? (hover.type === "anchor" ? "grab"
-        : hover.type === "vline" ? "ew-resize" : "ns-resize")
-      : "default";
+    canvas.style.cursor = !hover ? "default"
+      : (hover.type === "head" || hover.type === "limb") ? "grab"
+      : hover.type === "vline" ? "ew-resize" : "ns-resize";
   }
 
   canvas.addEventListener("pointerdown", onDown);
-  canvas.addEventListener("pointermove", (e) => { onMove(e); if (!drag) updateCursor(); });
+  canvas.addEventListener("pointermove", onMove);
   canvas.addEventListener("pointerup", onUp);
   canvas.addEventListener("pointercancel", onUp);
   canvas.addEventListener("pointerleave", () => { if (!drag) { hover = null; updateCursor(); draw(); } });
@@ -296,7 +322,8 @@
   document.getElementById("reset").addEventListener("click", () => {
     vfrac = DEFAULT_V.slice();
     hfrac = DEFAULT_H.slice();
-    anchors = DEFAULT_ANCHORS();
+    limbs = DEFAULT_LIMBS();
+    head = DEFAULT_HEAD();
     draw();
   });
 
